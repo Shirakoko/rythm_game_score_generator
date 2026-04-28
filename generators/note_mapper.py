@@ -3,9 +3,6 @@ import numpy as np
 
 
 class NoteMapper:
-    # Minimum onset gap to trigger a hold note
-    HOLD_GAP_THRESHOLD = 0.35  # seconds
-
     def generate(
         self,
         beat_times: np.ndarray,
@@ -17,6 +14,9 @@ class NoteMapper:
         candidates = np.sort(np.union1d(beat_times, onset_times))
         energy_times = energy_data["times"]
         energy_values = energy_data["energy"]
+
+        # Beat interval as the reference unit for hold duration
+        beat_interval = float(np.median(np.diff(beat_times))) if len(beat_times) > 1 else 0.5
 
         notes: list[dict] = []
         prev_lane = -1
@@ -37,15 +37,16 @@ class NoteMapper:
 
             lanes = self._pick_lanes(n_lanes, prev_lane)
 
-            # Hold note: long gap to next candidate + probability weighted by difficulty & energy
+            # Hold note: probability based on difficulty & energy; duration based on beat interval
             note_type = "single"
             hold_duration = 0.0
-            if i < len(candidates) - 1:
-                gap = float(candidates[i + 1]) - float(t)
-                hold_prob = difficulty * 0.35 + e * 0.15
-                if gap > self.HOLD_GAP_THRESHOLD and random.random() < hold_prob:
+            hold_prob = difficulty * 0.3 + e * 0.15
+            if random.random() < hold_prob:
+                beats = random.uniform(0.5, 1.0 + e)
+                dur = round(min(beat_interval * beats, total_duration - float(t) - 0.1), 3)
+                if dur >= 0.1:
                     note_type = "hold"
-                    hold_duration = round(gap * 0.8, 3)
+                    hold_duration = dur
 
             for lane in lanes:
                 notes.append(
