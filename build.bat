@@ -56,9 +56,6 @@ pyinstaller --onefile ^
     --hidden-import=customtkinter ^
     --hidden-import=numpy ^
     --hidden-import=scipy ^
-    --exclude-module=numba ^
-    --exclude-module=llvmlite ^
-    --exclude-module=sklearn ^
     main.py
 
 if errorlevel 1 (
