@@ -56,12 +56,9 @@ pyinstaller --onefile ^
     --hidden-import=customtkinter ^
     --hidden-import=numpy ^
     --hidden-import=scipy ^
-    --hidden-import=sklearn ^
-    --hidden-import=sklearn.utils._weight_vector ^
-    --hidden-import=numba ^
-    --hidden-import=llvmlite ^
-    --hidden-import=pkg_resources ^
-    --collect-all=pydub ^
+    --exclude-module=numba ^
+    --exclude-module=llvmlite ^
+    --exclude-module=sklearn ^
     main.py
 
 if errorlevel 1 (

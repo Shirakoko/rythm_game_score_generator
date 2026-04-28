@@ -1,8 +1,17 @@
+import bisect
 import random
+from collections import defaultdict
+
 import numpy as np
+
+from .pattern_engine import PatternEngine
 
 
 class NoteMapper:
+    def __init__(self):
+        self._engine = PatternEngine()
+        self._rng = random.Random()
+
     def generate(
         self,
         beat_times: np.ndarray,
@@ -15,62 +24,83 @@ class NoteMapper:
         energy_times = energy_data["times"]
         energy_values = energy_data["energy"]
 
-        # Beat interval as the reference unit for hold duration
         beat_interval = float(np.median(np.diff(beat_times))) if len(beat_times) > 1 else 0.5
 
-        notes: list[dict] = []
-        prev_lane = -1
-
-        for i, t in enumerate(candidates):
-            # Energy at current time
+        def energy_at(t: float) -> float:
             idx = min(int(np.searchsorted(energy_times, t)), len(energy_values) - 1)
-            e = float(energy_values[idx])
+            return float(energy_values[idx])
 
-            # Density = difficulty scaled by local energy
-            density = min(difficulty * (1.0 + e * 0.5), 1.0)
-            if random.random() >= density:
-                continue
+        # 1. Density filter
+        filtered = [
+            float(t)
+            for t in candidates
+            if self._rng.random() < min(difficulty * (1.0 + energy_at(float(t)) * 0.5), 1.0)
+        ]
 
-            # How many simultaneous lanes (chord probability rises with difficulty)
-            chord_prob = max(0.0, (difficulty - 0.5) * 0.8)
-            n_lanes = 2 if (difficulty > 0.6 and random.random() < chord_prob) else 1
+        if not filtered:
+            return []
 
-            lanes = self._pick_lanes(n_lanes, prev_lane)
+        # 2. Split into windows
+        windows = self._engine.split_into_windows(filtered, energy_at)
 
-            # Hold note: probability based on difficulty & energy; duration based on beat interval
-            note_type = "single"
-            hold_duration = 0.0
-            hold_prob = difficulty * 0.3 + e * 0.15
-            if random.random() < hold_prob:
-                beats = random.uniform(0.5, 1.0 + e)
-                dur = round(min(beat_interval * beats, total_duration - float(t) - 0.1), 3)
-                if dur >= 0.1:
-                    note_type = "hold"
-                    hold_duration = dur
+        # 3–4. Select pattern per window and apply
+        notes: list[dict] = []
+        prev_pattern = None
+        for window in windows:
+            pattern = self._engine.select_pattern(difficulty, window.energy, prev_pattern, self._rng)
+            notes.extend(self._engine.apply_pattern(window, pattern, self._rng))
+            prev_pattern = pattern
 
-            for lane in lanes:
-                notes.append(
-                    {
-                        "time": round(float(t), 4),
-                        "lane": lane,
-                        "type": note_type,
-                        "duration": hold_duration,
-                    }
-                )
-
-            prev_lane = lanes[-1]
+        # 5. Inject hold notes
+        notes = self._inject_holds(notes, difficulty, beat_interval, total_duration, energy_at)
 
         return notes
 
     # ------------------------------------------------------------------ helpers
 
-    def _pick_lanes(self, n: int, prev_lane: int) -> list[int]:
-        pool = list(range(4))
-        chosen: list[int] = []
-        for _ in range(n):
-            available = [l for l in pool if l not in chosen]
-            # Avoid repeating the most recent lane for the first pick
-            if len(chosen) == 0 and prev_lane in available and len(available) > 1:
-                available = [l for l in available if l != prev_lane]
-            chosen.append(random.choice(available))
-        return chosen
+    def _inject_holds(
+        self,
+        notes: list[dict],
+        difficulty: float,
+        beat_interval: float,
+        total_duration: float,
+        energy_at,
+    ) -> list[dict]:
+        notes.sort(key=lambda n: n["time"])
+
+        lane_times: dict[int, list[float]] = defaultdict(list)
+        for note in notes:
+            lane_times[note["lane"]].append(note["time"])
+
+        hold_end: dict[int, float] = {}
+
+        for note in notes:
+            lane = note["lane"]
+            t = note["time"]
+            e = energy_at(t)
+
+            if hold_end.get(lane, 0.0) > t + 0.05:
+                continue
+
+            if self._rng.random() >= difficulty * 0.08 + e * 0.04:
+                continue
+
+            # Duration in beats (BPM-relative): low energy → shorter, high energy → longer
+            max_beats = 2.0 + e * 2.0
+            beats = self._rng.uniform(1.0, max_beats)
+            dur = round(min(beat_interval * beats, total_duration - t - beat_interval), 3)
+
+            # Cap so hold releases before next note on same lane (quarter-beat gap)
+            times = lane_times[lane]
+            pos = bisect.bisect_right(times, t)
+            if pos < len(times):
+                dur = round(min(dur, times[pos] - t - beat_interval * 0.25), 3)
+
+            if dur < beat_interval * 0.5:
+                continue
+
+            note["type"] = "hold"
+            note["duration"] = dur
+            hold_end[lane] = t + dur
+
+        return notes
